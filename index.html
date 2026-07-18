@@ -95,6 +95,8 @@ const chatEl = $("chat"), inputEl = $("input"), sendBtn = $("send"), stopBtn = $
 let history = [];       // {role, content} content = string | array parts
 let pending = [];       // attached dataURLs for the next message
 let controller = null;
+let escalated = false;  // after SKIP/ESCALATE: stub replies, no API calls
+let abused = false;     // after ABUSE: repeat block notice, no API calls
 
 // ─── key management ───
 const KEY = "or_key";
@@ -146,6 +148,12 @@ function renderThumbs(){
 }
 
 // ─── escalation auto-reply (deterministic, MSK = UTC+3) ───
+function stubEta(){
+  const h = new Date(Date.now() + 3 * 3600 * 1000).getUTCHours();
+  if (h >= 8 && h < 22) return "Ваш вопрос уже передан оператору - он ответит в течение дня.";
+  if (h >= 22) return "Ваш вопрос уже у оператора - ответ будет завтра утром.";
+  return "Ваш вопрос уже у оператора - он ответит утром.";
+}
 const ABUSE_TEXT = "Вы ограничены в доступе к чату поддержки за оскорбления и нецензурную лексику в адрес Сервиса - основание: п. 7 Пользовательского соглашения «Нарушения и блокировка» (proxysvpn.com/terms). Доступ к сервису и ваш баланс при этом сохраняются в полном объёме.";
 function operatorEta(){
   const h = new Date(Date.now() + 3 * 3600 * 1000).getUTCHours();
@@ -158,7 +166,7 @@ function operatorEta(){
 function el(cls, text){ const d = document.createElement("div"); d.className = cls; if (text) d.textContent = text; chatEl.appendChild(d); scroll(); return d; }
 function scroll(){ chatEl.scrollTop = chatEl.scrollHeight; }
 function setBusy(b){ sendBtn.disabled = b; inputEl.disabled = b; stopBtn.style.display = b ? "" : "none"; }
-$("newChat").onclick = () => { history = []; pending = []; renderThumbs(); chatEl.innerHTML = ""; el("meta", "— новый диалог —"); };
+$("newChat").onclick = () => { history = []; pending = []; escalated = false; abused = false; renderThumbs(); chatEl.innerHTML = ""; el("meta", "— новый диалог —"); };
 inputEl.addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } });
 inputEl.addEventListener("input", () => { inputEl.style.height = "auto"; inputEl.style.height = Math.min(inputEl.scrollHeight, 160) + "px"; });
 sendBtn.onclick = send;
@@ -170,6 +178,16 @@ async function send(){
   if ((!text && pending.length === 0) || sendBtn.disabled) return;
   if (!getKey()) { showKeybar(true); return; }
   document.querySelector(".hint")?.remove();
+
+  if (abused || escalated) {
+    const imgs = pending; pending = []; renderThumbs();
+    const ub = el("msg user", text || "(скриншот)");
+    for (const src of imgs) { const im = document.createElement("img"); im.src = src; ub.appendChild(im); }
+    inputEl.value = ""; inputEl.style.height = "auto";
+    el(abused ? "msg abuse" : "msg skip", abused ? ABUSE_TEXT : stubEta());
+    el("meta", "заглушка · без запроса к модели");
+    return;
+  }
 
   const images = pending; pending = []; renderThumbs();
   inputEl.value = ""; inputEl.style.height = "auto";
@@ -239,6 +257,7 @@ async function send(){
     if (esc) {
       bubble.remove();
       const abuse = esc[1] === "ABUSE";
+      if (abuse) abused = true; else escalated = true;
       const card = el(abuse ? "msg abuse" : "msg skip", abuse ? ABUSE_TEXT : operatorEta());
       const reason = esc[2].trim().split("\n")[0];
       if (reason) {
